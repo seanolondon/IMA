@@ -22,10 +22,17 @@ setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/script
 
 source("westminster_roads.R")
 
-westminster_road <- read_xlsx(westminster_road_drive_location)
+westminster_council_table <- read_xlsx(westminster_road_drive_location, na = c("TBC", "n/a", "#VALUE!"))
+westminster_council_table$GSS_CODE<-"E09000033"
 
 boroughs <- st_read("W:/GISDataMapInfo/BaseMapping/Boundaries/AdminBoundaries/2018/ESRI/London/London_Borough.shp") %>%
   st_transform(27700)
+
+boroughs <- st_transform(boroughs, 27700)
+
+borough_table <- st_set_geometry(boroughs, NULL)
+
+
 
 #merge all roads as the base dataset
 
@@ -46,8 +53,6 @@ for(l in 1:length(files)){
 }
 
 london_roads <- do.call("rbind", purrr::flatten(london_roads)) %>%
-  !is.na(designat03) %>%
-  unique() %>%
   select(USRN,
          beginLifes,
          identifier,
@@ -60,21 +65,65 @@ london_roads <- do.call("rbind", purrr::flatten(london_roads)) %>%
          administ01,
          town1,
          gssCode1) %>%
+  filter(!is.na(designat03)) %>%
+  unique() %>%
   st_transform(27700)
 
 london_roads <- st_transform(london_roads, 27700)
-boroughs <- st_transform(boroughs, 27700)
-
 
 #test#
 #subset <- head(london_roads, n = 1000) %>%
 #  st_transform(4326)
 ######
 
-london_roads_boroughts <- left_join(london_roads, boroughs, by = ())
+
+london_roads_boroughs <- left_join(london_roads, borough_table, by = c("gssCode1" = "GSS_CODE")) 
+
+#filter to westminster roads#
+#THERE ARE DUPLICATE ROAD NAMES, WHICH ARE IN FACT DIFFERENT ROADS. THEY HAVE DIFFERENT AND DISCTINCT SPATIAL LOCATIONS#
+london_roads_westminster <- london_roads_boroughs %>%
+  filter(gssCode1 == "E09000033") %>%
+  rename_all(tolower) %>%
+  mutate(road_name_lwr = tolower(designat03)) %>%
+  mutate(road_name_clean = stringr::str_replace_all(string=road_name_lwr, pattern=" ", repl="")) %>%
+  mutate(road_name_clean = stringr::str_trim(road_name_clean)) %>%
+  mutate(road_name_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", road_name_clean))
+
+
+#reformat the council provided road resurfacing table
+colnames(westminster_council_table) <- gsub(pattern = "[^a-zA-Z0-9]", replacement = "", colnames(westminster_council_table))
+
+#clean the road name column
+##dynamically select 'road name' in future development
+westminster_council_table <- westminster_council_table %>%
+  rename_all(tolower) %>%
+  mutate(road_name_lwr = tolower(roadname)) %>%
+  mutate(road_name_clean = stringr::str_replace_all(string=road_name_lwr, pattern=" ", repl="")) %>%
+  mutate(road_name_clean = stringr::str_trim(road_name_clean)) %>%
+  mutate(road_name_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", road_name_clean))
+
+#testing the start and finish clumns#
+westminster_council_table <- westminster_council_table %>%
+  str_split_fixed(string, pattern, n)
+
+
+#CLIP BY BOROUGH#
+london_roads_westminster <- sapply(st_intersects(london_roads_westminster, boroughs),function(x){length(x)!=0}) %>%
+  subset(london_roads_westminster, subset = .) %>%
+  st_intersection(boroughs)
+#TEST MATCHING#
+#get ALL roads with a match - could be duplicated if roads with same name#
+roads_with_resurfacing <- full_join(london_roads_westminster, westminster_council_table, by = "road_name_clean") %>%
+  filter(!is.na(roadname))
+#TESTFUZZYMATCH#
+fuzzy_inner_join(y, by = c("string" = "seed"), match_fun = str_detect)
+#FILTER JOIN BY ROADNAME MATCH#
+#CLIP BY TOUCHING/INTERSECTING JUNCTIONS#
+  
+
 
 #agrep
-
+#####clipper test######
 roads_by_borough <- sapply(st_intersects(london_roads, boroughs[1,]),function(x){length(x)!=0}) %>%
   subset(london_roads, subset = .) %>%
   st_intersection(boroughs[1,]) %>% 
@@ -85,7 +134,10 @@ roads_by_borough <- sapply(st_intersects(london_roads, boroughs[1,]),function(x)
 #plotting only#
 
 #put into wgs for plotting
-roads_by_borough_plot <- roads_by_borough %>%
+roads_by_borough_plot <- roads_with_resurfacing %>%
+  st_transform(4326)
+
+base_roads_by_borough_plot <- london_roads_westminster %>%
   st_transform(4326)
 
 boroughs_plot <- boroughs %>%
@@ -99,10 +151,16 @@ leaflet() %>%
   addProviderTiles("Stamen.TonerLite",
                    options = leafletOptions(pane = 'base')) %>%
   addPolygons(data = boroughs_plot,
-               color = "blue",
-               opacity = 0.2,
-               options = leafletOptions(pane='themes')) %>%
+              color = "blue",
+              opacity = 0.2,
+              options = leafletOptions(pane='themes')) %>%
+  addPolylines(data = base_roads_by_borough_plot,
+              color = "green",
+              weight = 3,
+              opacity = 0.2,
+              options = leafletOptions(pane='themes')) %>%
   addPolylines(data = roads_by_borough_plot,
-                   color = "red",
-                   options = leafletOptions(pane='themes'))
+             color = "red",
+             weight = 4,
+             options = leafletOptions(pane='themes'))
 
