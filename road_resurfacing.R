@@ -5,6 +5,9 @@
 #Intended use for the Infrastructure Mapping Applicaiton
 #Council's road resurfacing data in tabular form to spatial table 
 
+#https://cran.r-project.org/web/packages/dodgr/dodgr.pdf
+#https://rdrr.io/cran/stplanr/man/route_graphhopper.html
+
 library(dplyr)
 library(magrittr)
 library(tidyr)
@@ -103,20 +106,79 @@ westminster_council_table <- westminster_council_table %>%
   mutate(road_name_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", road_name_clean))
 
 #testing the start and finish clumns#
-westminster_council_table <- westminster_council_table %>%
-  str_split_fixed(string, pattern, n)
+westminster_council_table_intersections <- westminster_council_table$roadname %>%
+  stringr::str_detect("Square|square") %>%
+  cbind(westminster_council_table) %>%
+  mutate(square_1 = as.numeric(.)) %>%
+  select(-.)  
 
+
+westminster_council_table_intersections <- westminster_council_table_intersections$locationextents %>%
+  stringr::str_detect("Junction|junction") %>%
+  cbind(westminster_council_table_intersections) %>%
+  mutate(junction_1 = as.numeric(.)) %>%
+  select(-.) 
+
+westminster_council_table_intersections <- westminster_council_table_intersections$locationextents %>%
+  stringr::str_split_fixed(pattern = " to |&", n = Inf) %>%
+  cbind(westminster_council_table_intersections) %>%
+  rename(intersection_1 = `1`) %>%
+  rename(intersection_2 = `2`) %>%
+  rename(intersection_3 = `3`) %>%
+  mutate(intersection_1_lwr = tolower(intersection_1)) %>%
+  mutate(intersection_1_clean = stringr::str_replace_all(string=intersection_1_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_1_clean = stringr::str_trim(intersection_1_clean)) %>%
+  mutate(intersection_1_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_1_clean)) %>%
+  mutate(intersection_2_lwr = tolower(intersection_2)) %>%
+  mutate(intersection_2_clean = stringr::str_replace_all(string=intersection_2_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_2_clean = stringr::str_trim(intersection_2_clean)) %>%
+  mutate(intersection_2_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_2_clean)) %>%  
+  mutate(intersection_3_lwr = tolower(intersection_3)) %>%
+  mutate(intersection_3_clean = stringr::str_replace_all(string=intersection_3_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_3_clean = stringr::str_trim(intersection_3_clean)) %>%
+  mutate(intersection_3_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_3_clean))
+
+
+#get ALL roads with a match - could be duplicated if roads with same name#
+roads_with_resurfacing <- full_join(london_roads_westminster, westminster_council_table_intersections, by = "road_name_clean") %>%
+  filter(!is.na(roadname))
+
+########################################################
 
 #CLIP BY BOROUGH#
 london_roads_westminster <- sapply(st_intersects(london_roads_westminster, boroughs),function(x){length(x)!=0}) %>%
   subset(london_roads_westminster, subset = .) %>%
   st_intersection(boroughs)
-#TEST MATCHING#
-#get ALL roads with a match - could be duplicated if roads with same name#
-roads_with_resurfacing <- full_join(london_roads_westminster, westminster_council_table, by = "road_name_clean") %>%
-  filter(!is.na(roadname))
+
+#CLIP BY TOUCHING ROADS OF BOROUGH ROADS#
+#evolve into a for loop, replace 1 with i#
+touching_resurfaced_roads <- sapply(st_intersects(london_roads_westminster, roads_with_resurfacing[1,]),function(x){length(x)!=0}) %>%
+  subset(london_roads_westminster, subset = .) 
+
+#filter out the resurfaced road spatially
+clipping_resurfaced_roads <- sapply(st_equals(touching_resurfaced_roads, roads_with_resurfacing[1,]),function(x){length(x)==0}) %>%
+  subset(touching_resurfaced_roads, subset = .) %>%
+  
+#join the full road detail back to the clipping roads  
+clip_road_1 <- roads_with_resurfacing[1,] %>%
+  st_set_geometry(NULL) %>%
+  inner_join(x = clipping_resurfaced_roads, by = c("road_name_clean" = "intersection_1_clean"))
+
+clip_road_2 <- roads_with_resurfacing[1,] %>%
+  st_set_geometry(NULL) %>%
+  inner_join(x = clipping_resurfaced_roads, by = c("road_name_clean" = "intersection_2_clean"))
+
+clip_road_3 <- roads_with_resurfacing[1,] %>%
+  st_set_geometry(NULL) %>%
+  inner_join(x = clipping_resurfaced_roads, by = c("road_name_clean" = "intersection_3_clean")) 
+  
+ifelse(nrow(clip_road_3) == 0, rm(clip_road_3))
+
+
+
 #TESTFUZZYMATCH#
-fuzzy_inner_join(y, by = c("string" = "seed"), match_fun = str_detect)
+#fuzzy_inner_join(y, by = c("string" = "seed"), match_fun = str_detect)
+
 #FILTER JOIN BY ROADNAME MATCH#
 #CLIP BY TOUCHING/INTERSECTING JUNCTIONS#
   
@@ -132,8 +194,10 @@ roads_by_borough <- sapply(st_intersects(london_roads, boroughs[1,]),function(x)
 
 
 #plotting only#
-
 #put into wgs for plotting
+intersecting_roads <- clipping_resurfaced_roads %>%
+  st_transform(4326)  
+  
 roads_by_borough_plot <- roads_with_resurfacing %>%
   st_transform(4326)
 
@@ -161,6 +225,11 @@ leaflet() %>%
               options = leafletOptions(pane='themes')) %>%
   addPolylines(data = roads_by_borough_plot,
              color = "red",
-             weight = 4,
-             options = leafletOptions(pane='themes'))
+             weight = 3,
+             options = leafletOptions(pane='themes')) %>%
+  addPolylines(data = intersecting_roads,
+               color = "purple",
+               weight = 4,
+               options = leafletOptions(pane='themes'))
+
 
