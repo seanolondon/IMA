@@ -152,32 +152,53 @@ london_roads_westminster <- sapply(st_intersects(london_roads_westminster, borou
   subset(london_roads_westminster, subset = .) %>%
   st_intersection(boroughs)
 
+
+
 #CLIP BY TOUCHING ROADS OF BOROUGH ROADS#
 #evolve into a for loop, replace 4 with i#
 
 #roads_with_resurfacing[4,]
+#filter out squares and junctions! 
+roads_with_resurfacing <- roads_with_resurfacing %>%
+  filter(square_1 < 1) %>%
+  filter(junction_1 < 1)
 
-resurfacing_road_unclipped <- roads_with_resurfacing[37,]
+roads_with_resurfacing_clipped <- list()
 
-resurfacing_road_unclipped <- st_cast(resurfacing_road_unclipped, "LINESTRING")
+#create the roads_with_resurfacing_clipped list through a loop of the dataframe
+for(i in 1:nrow(roads_with_resurfacing)) {
+
+resurfacing_road_unclipped <- roads_with_resurfacing[i,]
+
+resurfacing_road_unclipped <- st_cast(resurfacing_road_unclipped, "MULTILINESTRING") 
 
 resurfacing_road_unclipped_df <- st_set_geometry(resurfacing_road_unclipped, NULL)
+
+resurfaced_road <- resurfacing_road_unclipped_df$road_name_clean[1]
 
 #150 METERS IS ARBITRARY! it accounts for the problem with mislabelled streets or places where streets change
 touching_resurfaced_roads <- sapply(st_is_within_distance(london_roads_westminster, resurfacing_road_unclipped, dist = 150),function(x){length(x)!=0}) %>%
   subset(london_roads_westminster, subset = .) %>%
-  mutate(base_road_name = resurfacing_road_unclipped$road_name_clean)
+  mutate(base_road_name = resurfaced_road)
 
 #filter out the resurfaced road spatially
 clipping_resurfaced_roads <- sapply(st_equals(touching_resurfaced_roads, resurfacing_road_unclipped),function(x){length(x)==0}) %>%
   subset(touching_resurfaced_roads, subset = .) %>%
   left_join(resurfacing_road_unclipped_df, by = c("base_road_name" = "road_name_clean")) %>%
-  filter(road_name_clean == intersection_1_clean | road_name_clean == intersection_2_clean | road_name_clean == intersection_3_clean)
+  filter(road_name_clean == intersection_1_clean | road_name_clean == intersection_2_clean | road_name_clean == intersection_3_clean) %>%
+  st_cast("MULTILINESTRING")
 
-#if no   
+#check if al lthe line pieces are touching
+clipping_resurfaced_roads <- clipping_resurfaced_roads[as.vector(st_intersects(clipping_resurfaced_roads, resurfacing_road_unclipped, sparse = FALSE)),]
+
+st_erase = function(x, y) st_difference(x, st_union(st_combine(y)))
+
+#if nointersect, this oculd be adifference between maps e.g. OS and Google maps
+#extend the line to intersect, snap, then erase the overlapping area
 if(st_intersects(resurfacing_road_unclipped, clipping_resurfaced_roads, sparse = FALSE) == FALSE){
   print("no intersect")
-  clipping_resurfaced_roads <- st_snap(clipping_resurfaced_roads, resurfacing_road_unclipped, tolerance = 150)
+  clipping_resurfaced_roads <- st_snap(clipping_resurfaced_roads, resurfacing_road_unclipped, tolerance = 150) %>%
+    st_erase(resurfacing_road_unclipped)
 } else {
   print("ALL GOOD")
 }
@@ -224,6 +245,14 @@ split_resurfaced_road_shortest <- split_resurfaced_road %>%
   arrange(road_segment_length) %>%
   filter(row_number()==1)
 
+roads_with_resurfacing_clipped[[i]] <- split_resurfaced_road_shortest
+
+}
+
+roads_with_resurfacing_clipped <- purrr::map(roads_with_resurfacing_clipped, st_sf)
+
+
+roads_with_resurfacing_clipped <- do.call(rbind, roads_with_resurfacing_clipped1)
 
 #TESTFUZZYMATCH#
 #fuzzy_inner_join(y, by = c("string" = "seed"), match_fun = str_detect)
@@ -237,7 +266,7 @@ split_resurfaced_road_shortest <- split_resurfaced_road %>%
 
 #plotting only#
 #put into wgs for plotting
-intersecting_roads <- intersecting_roads %>%
+intersecting_roads <- clipping_resurfaced_roads %>%
   st_transform(4326)  
   
 roads_by_borough_plot <- road_to_clip %>%
@@ -249,17 +278,18 @@ base_roads_by_borough_plot <- london_roads_westminster %>%
 boroughs_plot <- boroughs %>%
   st_transform(4326)
 
-road_with_resurfaceing_plot <- resurfacing_road_unclipped %>%
+road_with_resurfaceing_plot <- roads_with_resurfacing %>%
   st_transform(4326)
 
-split_resurfaced_road_plot <- split_resurfaced_road_shortest %>%
+split_resurfaced_road_plot <- roads_with_resurfacing_clipped %>%
   st_transform(4326)
 
 leaflet() %>%
   addMapPane(name = 'base', zIndex = 1) %>%
   addMapPane(name = 'themes', zIndex = 2) %>%
   clearBounds() %>%
-  setView(lng = -0.145459, lat = 51.519052, zoom = 18) %>% #create a default position
+  #51.5199312,-0.2023115
+  setView(lng = -0.2023115, lat = 51.5199312, zoom = 18) %>% #create a default position
   addProviderTiles("Stamen.TonerLite",
                    options = leafletOptions(pane = 'base')) %>%
   addPolygons(data = boroughs_plot,
@@ -278,11 +308,11 @@ leaflet() %>%
   addPolylines(data = intersecting_roads,
                color = "yellow",
                weight = 4,
-               options = leafletOptions(pane='themes')) %>%
+              options = leafletOptions(pane='themes')) %>%
   addPolylines(data = split_resurfaced_road_plot,
-             color = "orange",
-             weight = 5,
-             options = leafletOptions(pane='themes'))
+            color = "orange",
+            weight = 5,
+            options = leafletOptions(pane='themes'))
   
 
 
