@@ -20,10 +20,17 @@ library(ggmap)
 library(leaflet)
 library(sf, lib = .libPaths()[2])
 library(lwgeom)
-#library(stplanr)
+library(stplanr)
 library(osmar)
+library(stringdist)
+library(RCurl)
+library(RJSONIO)
+library(revgeo)
+
+#require(devtools)  
+#devtools::install_github(repo = 'rCarto/photon') 
+
 #install.packages(c("sf", "lwgeom", "stplanr", "osmar", "stplanr","dplyr","magrittr","tidyr","sp","readxl","rmarkdown","purrr","ggplot2","ggmap","leaflet"), lib = .libPaths()[1], dependancies = TRUE)
-#install.packages("stplanr", lib = .libPaths()[1])
 
 #Get the file
 setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/scripts/road_resurfacing")
@@ -122,13 +129,24 @@ westminster_council_table_intersections <- westminster_council_table_intersectio
   mutate(intersection_3_lwr = tolower(intersection_3)) %>%
   mutate(intersection_3_clean = stringr::str_replace_all(string=intersection_3_lwr, pattern=" ", repl="")) %>%
   mutate(intersection_3_clean = stringr::str_trim(intersection_3_clean)) %>%
-  mutate(intersection_3_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_3_clean))
-
-
-london_roads_westminster <- london_roads_westminster %>%
-  select(roadname1) %>%
+  mutate(intersection_3_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_3_clean)) %>%
+  mutate(startname1 = paste0(road_name_clean, intersection_1_clean)) %>%
+  mutate(startname2 = paste0(road_name_clean, intersection_2_clean)) %>%
+  mutate(startname3 = paste0(road_name_clean, intersection_3_clean)) %>%
+  mutate(startname1_alt = paste0(intersection_1_clean, road_name_clean)) %>%
+  mutate(startname2_alt = paste0(intersection_2_clean, road_name_clean)) %>%
+  mutate(startname3_alt = paste0(intersection_3_clean, road_name_clean)) %>%
+  mutate(endname1 = paste0(road_name_clean, intersection_1_clean)) %>%
+  mutate(endname2 = paste0(road_name_clean, intersection_2_clean)) %>%
+  mutate(endname3 = paste0(road_name_clean, intersection_3_clean)) %>%
+  mutate(endname1_alt = paste0(intersection_1_clean, road_name_clean)) %>%
+  mutate(endname2_alt = paste0(intersection_2_clean, road_name_clean)) %>%
+  mutate(endname3_alt = paste0(intersection_3_clean, road_name_clean))
   
 
+london_roads_westminster <- london_roads_westminster %>%
+  select(roadname1)
+  
 london_roads_nodes_westminster <- london_roads_nodes_westminster %>%
   st_join(london_roads_westminster) %>%
   select(OBJECTID, roadname1) %>%
@@ -143,6 +161,43 @@ london_roads_nodes_westminster_df_clean <- st_set_geometry(london_roads_nodes_we
   as_tibble() %>%
   lapply(FUN = function(x) gsub("[^a-zA-Z0-9]", "", x)) %>%
   as_tibble()
+
+#replace duplicate road names in a row with NA
+london_roads_nodes_westminster_df_clean[][t(apply(london_roads_nodes_westminster_df_clean[], 1, duplicated))] <- NA
+
+#replace take all the intersections, remove NAs with blanks and join into all names merged
+node_intersections <- london_roads_nodes_westminster_df_clean %>%
+  select(starts_with("touching")) %>%
+  replace(is.na(.), '') %>%
+  unite(all_intersects, sep = "")
+
+#bind the intersection names back to the nodes table
+london_roads_nodes_westminster_df_clean <- cbind(london_roads_nodes_westminster_df_clean, node_intersections)
+
+#set up intersection 1 using OSM geocoding
+OSMCRS <- sp::CRS("+init=epsg:4326")
+point1 <- geo_code("Elverton street, Westminster, London, UK", service = "nominatim") 
+ 
+  sp::SpatialPoints(matrix(point1, ncol = 2), proj4string = OSMCRS) %>% 
+    st_as_sf() %>%
+  st_transform(27700) %>%
+    st_is_within_distance(london_roads_nodes_westminster, dist = 10)
+
+#set up intersection 2
+
+#1-stringdist(westminster_council_table_intersections$startname1[1],london_roads_nodes_westminster_df_clean$all_intersects,method='jw')
+
+
+#ifelse(jarowinkler(london_roads_nodes_westminster_df_clean$all_intersects, westminster_council_table_intersections$startname1) > 0.85, london_roads_nodes_westminster_df_clean$all_intersects, NA)
+
+#westminster_council_table_intersections[westminster_council_table_intersections$startname1 %agrep% london_roads_nodes_westminster_df_clean$all_intersects,]
+
+#fuzzyjoin::fuzzy_semi_join(westminster_council_table_intersections, london_roads_nodes_westminster_df_clean, by = startname1 )
+
+route_graphhopper(from, to, l = NULL, vehicle = "car",
+                  silent = TRUE, pat = NULL, base_url = "https://graphhopper.com")
+
+start_node <- 
 
 
 agrep(pattern, x, max.distance = 0.1, costs = NULL,
@@ -177,8 +232,6 @@ roads_with_resurfacing_simple <- roads_with_resurfacing %>%
 
 roads_with_resurfacing_clipped <- list()
 
-stuck here!!!
-  
 for(i in 1:nrow(roads_with_resurfacing_simple)) {
   
   resurfacing_road_unclipped <- roads_with_resurfacing_simple[1,] %>%
