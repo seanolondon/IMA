@@ -31,11 +31,6 @@ library(rvest)
 library(rjson)
 library(jsonlite)
 
-#require(devtools)  
-#devtools::install_github(repo = 'rCarto/photon') 
-
-#install.packages(c("sf", "lwgeom", "stplanr", "osmar", "stplanr","dplyr","magrittr","tidyr","sp","readxl","rmarkdown","purrr","ggplot2","ggmap","leaflet"), lib = .libPaths()[1], dependancies = TRUE)
-
 #Get the file
 setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/scripts/road_resurfacing")
 
@@ -49,6 +44,8 @@ westminster_council_table$GSS_CODE<-"E09000033"
 
 boroughs <- st_read("W:/GISDataMapInfo/BaseMapping/Boundaries/AdminBoundaries/2018/ESRI/London/London_Borough.shp") %>%
   st_transform(27700)
+
+boroughs_name <- "Westminster"
 
 boroughs <- st_transform(boroughs, 27700)
 
@@ -179,28 +176,121 @@ node_intersections <- london_roads_nodes_westminster_df_clean %>%
 #bind the intersection names back to the nodes table
 london_roads_nodes_westminster_df_clean <- cbind(london_roads_nodes_westminster_df_clean, node_intersections)
 
-
-########################################################################
-#set up intersection 1 using OSM geocoding
 OSMCRS <- sp::CRS("+init=epsg:4326")
 
-#########################
+########################################################################
 
-start_node <- geo_code("Intersection of Garway Road and Westbourne Grove, London, UK", service = "google", pat = google_api_key) %>% as.numeric()
-end_node <- geo_code("Intersection of Garway Road and  o/s No 1 Garway Road, London, UK", service = "google", pat = google_api_key) %>% as.numeric()
+#filter out squares and ends and blank intersection 2 
+#roadname plus intersection_1 = start_node
+#roadname plus intersection_2 = end node_node
+#intersection of road & intersec1 + road & intersect2 + borough + london + uk
 
-#from <- c(-1.55, 53.80) # geo_code("leeds")
-#to <- c(-1.76, 53.80) # geo_code("bradford uk")
-r <- stplanr::route_osrm(start_node, end_node, alt = FALSE)
+westminster_council_table_intersections$start_string <- paste("Intersection of", 
+                      westminster_council_table_intersections$roadname, 
+                      "and", 
+                      westminster_council_table_intersections$intersection_1,
+                      ",",
+                      boroughs_name,
+                      ", London, UK")
 
-route <- stplanr::route_graphhopper(from = start_node, to = end_node, vehicle = "car", silent = FALSE, pat = graphhopper_api_key)  
+westminster_council_table_intersections$end_string <- paste("Intersection of", 
+                    westminster_council_table_intersections$roadname, 
+                    "and", 
+                    westminster_council_table_intersections$intersection_2,
+                    ",",
+                    boroughs_name,
+                    ", London, UK")
+
+westminster_council_table_intersections <- westminster_council_table_intersections %>%
+  filter(square_1 < 1) %>%
+  filter(junction_1 < 1) %>%
+  filter(end_1 < 1)
+
+starting_points <- list()
+ending_points <- list()
+
+starting_points_bng <- list()
+ending_points_bng <- list()
+
+#Function to build spatial lists of start points, end points, and road resurfacing
+#often errors due to no response and overload from rousting server
+#there is a function to catch this. 
+
+for(k in 1:nrow(westminster_council_table_intersections)) {
+
+start_node <- geo_code(westminster_council_table_intersections$start_string[k], service = "google", pat = google_api_key) %>% as.numeric()
+
+starting_points[[k]] <- start_node
+
+start_node_bng <- sp::SpatialPoints(matrix(start_node, ncol = 2), proj4string = OSMCRS) %>% 
+  st_as_sf() %>%
+  st_transform(27700)
+
+starting_points_bng[[k]] <- start_node_bng
+}
+
+for(l in 1:nrow(westminster_council_table_intersections)) {
+  
+end_node <- geo_code(westminster_council_table_intersections$end_string[l], service = "google", pat = google_api_key) %>% as.numeric()
+
+ending_points[[l]] <- end_node
+
+end_node_bng <- sp::SpatialPoints(matrix(end_node, ncol = 2), proj4string = OSMCRS) %>% 
+  st_as_sf() %>%
+  st_transform(27700)
+
+ending_points_bng[[l]] <- end_node_bng
+}
+
+########
+#test the number of items in each list match
+ifelse(length(ending_points) == length(starting_points), print("same amount of start & end"), stop("mismatch in geocoding"))
+########
+
+roads_with_resurfacing <- list()
+
+#for(m in 1:length(starting_points)) {
+for(m in 1:2)) {
+resurf_osmr <- stplanr::route_osrm(from = starting_points[[m]], to = ending_points[[m]], alt = FALSE)
+stplanr::route()
+roads_with_resurfacing[[m]] <- resurf_osmr
+}
+
+route_may_fail <- function() {
+  if(   #download all zip files from the links
+    resurf_osmr <- stplanr::route_osrm(start_node, end_node, alt = FALSE) %>%
+    st_as_sf() %>%
+    st_transform(27700)
+    ) stop()
+  return(1)
+}
+
+r <- NULL
+attempt <- 1
+while( is.null(r) && attempt <= 100 ) {
+  attempt <- attempt + 1
+  try(
+    r <- route_may_fail()
+  )
+}
+
+#start and endpoint list of resurfacing routes
+roads_with_resurfacing[[k]] <- resurf_osmr
+
+
+
+intersection_points <- do.call(rbind, intersection_points)
+
+
+#resurf_graphhopper <- stplanr::route_graphhopper(from = start_node, to = end_node, vehicle = "car", silent = FALSE, pat = graphhopper_api_key) %>%
+#  st_as_sf() %>%
+#  st_transform(27700)
 
 
 ##########
-r %>%
-  st_as_sf() %>%
-  st_transform(27700) %>%
-  st_write("M:/line.shp")
+st_write(resurf_osmr, "M:/route_testing/line.shp")
+st_write(start_node_bng, "M:/route_testing/start.shp")
+st_write(end_node_bng, "M:/route_testing/end.shp")
 
 
   
@@ -209,27 +299,6 @@ r %>%
   #sp::SpatialPoints(matrix(point1, ncol = 2), proj4string = OSMCRS) %>% 
    # st_as_sf()
 #set up intersection 2
-
-#stringdist(westminster_council_table_intersections$startname1[1],london_roads_nodes_westminster_df_clean$all_intersects,method='jw')
-
-
-#ifelse(jarowinkler(london_roads_nodes_westminster_df_clean$all_intersects, westminster_council_table_intersections$startname1) > 0.85, london_roads_nodes_westminster_df_clean$all_intersects, NA)
-
-#westminster_council_table_intersections[westminster_council_table_intersections$startname1 %agrep% london_roads_nodes_westminster_df_clean$all_intersects,]
-
-#fuzzyjoin::fuzzy_semi_join(westminster_council_table_intersections, london_roads_nodes_westminster_df_clean, by = startname1 )
-
-
-
-start_node <- 
-
-
-agrep(pattern, x, max.distance = 0.1, costs = NULL,
-      ignore.case = FALSE, value = FALSE, fixed = TRUE,
-      useBytes = FALSE)
-
-
-
 
 #get ALL roads with a match - could be duplicated if roads with same name#
 roads_with_resurfacing <- full_join(london_roads_westminster, westminster_council_table_intersections, by = "road_name_clean") %>%
