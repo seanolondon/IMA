@@ -26,6 +26,10 @@ library(stringdist)
 library(RCurl)
 library(RJSONIO)
 library(revgeo)
+library(httr)
+library(rvest)
+library(rjson)
+library(jsonlite)
 
 #require(devtools)  
 #devtools::install_github(repo = 'rCarto/photon') 
@@ -36,6 +40,7 @@ library(revgeo)
 setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/scripts/road_resurfacing")
 
 source("westminster_roads.R")
+source("api_keys.R")
 
 st_erase = function(x, y) st_difference(x, st_union(st_combine(y)))
 
@@ -174,18 +179,38 @@ node_intersections <- london_roads_nodes_westminster_df_clean %>%
 #bind the intersection names back to the nodes table
 london_roads_nodes_westminster_df_clean <- cbind(london_roads_nodes_westminster_df_clean, node_intersections)
 
+
+########################################################################
 #set up intersection 1 using OSM geocoding
 OSMCRS <- sp::CRS("+init=epsg:4326")
-point1 <- geo_code("Elverton street, Westminster, London, UK", service = "nominatim") 
- 
-  sp::SpatialPoints(matrix(point1, ncol = 2), proj4string = OSMCRS) %>% 
-    st_as_sf() %>%
-  st_transform(27700) %>%
-    st_is_within_distance(london_roads_nodes_westminster, dist = 10)
 
+#########################
+
+start_node <- geo_code("Intersection of Garway Road and Westbourne Grove, London, UK", service = "google", pat = google_api_key) %>% as.numeric()
+end_node <- geo_code("Intersection of Garway Road and  o/s No 1 Garway Road, London, UK", service = "google", pat = google_api_key) %>% as.numeric()
+
+#from <- c(-1.55, 53.80) # geo_code("leeds")
+#to <- c(-1.76, 53.80) # geo_code("bradford uk")
+r <- stplanr::route_osrm(start_node, end_node, alt = FALSE)
+
+route <- stplanr::route_graphhopper(from = start_node, to = end_node, vehicle = "car", silent = FALSE, pat = graphhopper_api_key)  
+
+
+##########
+r %>%
+  st_as_sf() %>%
+  st_transform(27700) %>%
+  st_write("M:/line.shp")
+
+
+  
+#OSM_geocode <- geo_code("No 1 Garway Road, Westminster, London, UK", service = "nominatim")
+
+  #sp::SpatialPoints(matrix(point1, ncol = 2), proj4string = OSMCRS) %>% 
+   # st_as_sf()
 #set up intersection 2
 
-#1-stringdist(westminster_council_table_intersections$startname1[1],london_roads_nodes_westminster_df_clean$all_intersects,method='jw')
+#stringdist(westminster_council_table_intersections$startname1[1],london_roads_nodes_westminster_df_clean$all_intersects,method='jw')
 
 
 #ifelse(jarowinkler(london_roads_nodes_westminster_df_clean$all_intersects, westminster_council_table_intersections$startname1) > 0.85, london_roads_nodes_westminster_df_clean$all_intersects, NA)
@@ -194,8 +219,7 @@ point1 <- geo_code("Elverton street, Westminster, London, UK", service = "nomina
 
 #fuzzyjoin::fuzzy_semi_join(westminster_council_table_intersections, london_roads_nodes_westminster_df_clean, by = startname1 )
 
-route_graphhopper(from, to, l = NULL, vehicle = "car",
-                  silent = TRUE, pat = NULL, base_url = "https://graphhopper.com")
+
 
 start_node <- 
 
