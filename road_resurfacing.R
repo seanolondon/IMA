@@ -36,6 +36,7 @@ setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/script
 
 source("westminster_roads.R")
 source("api_keys.R")
+source("route_graphhopper_so_fix.R")
 
 st_erase = function(x, y) st_difference(x, st_union(st_combine(y)))
 
@@ -218,20 +219,53 @@ ending_points_bng <- list()
 
 for(k in 1:nrow(westminster_council_table_intersections)) {
 
-start_node <- geo_code(westminster_council_table_intersections$start_string[k], service = "google", pat = google_api_key) %>% as.numeric()
-
-starting_points[[k]] <- start_node
-
-start_node_bng <- sp::SpatialPoints(matrix(start_node, ncol = 2), proj4string = OSMCRS) %>% 
-  st_as_sf() %>%
-  st_transform(27700)
-
-starting_points_bng[[k]] <- start_node_bng
+  start_node <- geo_code(westminster_council_table_intersections$start_string[k], return_all = TRUE, service = "google", pat = google_api_key) %>% 
+    as.data.frame()
+  
+  if (start_node$types == "intersection"){
+    start_node <- filter(start_node, types == "intersection")
+  } else {
+    print("false")
+  }
+  
+  start_node <- start_node %>%
+    select(matches('geometry.location.lat|geometry.location.lng'))%>%
+    filter(row_number() == 1)
+  
+  #tibble::rownames_to_column(var = "latlong") %>%
+  #filter(latlong == "lon1"| latlong == "lat1" | latlong == "lon"| latlong == "lat")
+  
+  start_node <- c(start_node[1,2], start_node[1,1])
+  
+  starting_points[[k]] <- start_node
+  
+  start_node_bng <- sp::SpatialPoints(matrix(start_node, ncol = 2), proj4string = OSMCRS) %>% 
+    st_as_sf() %>%
+    st_transform(27700)
+  
+  starting_points_bng[[k]] <- start_node_bng
 }
+
 
 for(l in 1:nrow(westminster_council_table_intersections)) {
   
-end_node <- geo_code(westminster_council_table_intersections$end_string[l], service = "google", pat = google_api_key) %>% as.numeric()
+  end_node <- geo_code(westminster_council_table_intersections$end_string[l], return_all = TRUE, service = "google", pat = google_api_key) %>% 
+    as.data.frame()
+  
+  if (end_node$types == "intersection"){
+    end_node <- filter(end_node, types == "intersection")
+  } else {
+    print("false")
+  }
+  
+  end_node <- end_node %>%
+    select(matches('geometry.location.lat|geometry.location.lng'))%>%
+    filter(row_number() == 1)
+  
+  #tibble::rownames_to_column(var = "latlong") %>%
+  #filter(latlong == "lon1"| latlong == "lat1" | latlong == "lon"| latlong == "lat")
+
+end_node <- c(end_node[1,2], end_node[1,1])
 
 ending_points[[l]] <- end_node
 
@@ -240,7 +274,27 @@ end_node_bng <- sp::SpatialPoints(matrix(end_node, ncol = 2), proj4string = OSMC
   st_transform(27700)
 
 ending_points_bng[[l]] <- end_node_bng
+
 }
+
+starting_points_bng_sf <- do.call(rbind, starting_points_bng)
+ending_points_bng_sf <- do.call(rbind, ending_points_bng)
+
+####need midpoints so most effecient route isn't taken
+#use startpoint and endpoint to create a bounding box
+#use the bounding box to filter nodes
+#find a node which intersects the road twice 
+#or create a bounding box, clip the lines, select by street name, then get midpoint of that segment
+
+bbox_roads <- list()
+
+for (z in 1:44) {
+  a = st_sf(a = 1:2, geom = st_sfc(st_point(st_coordinates(starting_points_bng_sf[z,1])), st_point(st_coordinates(ending_points_bng_sf[z,1]))), crs = 27700)
+  bbox <- st_bbox(a)
+  bbox_roads[[z]] <- st_intersection(london_roads_westminster, st_as_sfc(bbox))
+}
+
+
 
 ########
 #test the number of items in each list match
@@ -249,49 +303,42 @@ ifelse(length(ending_points) == length(starting_points), print("same amount of s
 
 roads_with_resurfacing <- list()
 
-#for(m in 1:length(starting_points)) {
-for(m in 1:2)) {
-resurf_osmr <- stplanr::route_osrm(from = starting_points[[m]], to = ending_points[[m]], alt = FALSE)
-stplanr::route()
-roads_with_resurfacing[[m]] <- resurf_osmr
-}
 
-route_may_fail <- function() {
-  if(   #download all zip files from the links
-    resurf_osmr <- stplanr::route_osrm(start_node, end_node, alt = FALSE) %>%
+for(m in 1:length(starting_points)) {
+#for(m in 1:8) {
+  print(starting_points[[m]])
+  print(ending_points[[m]])
+  roads_with_resurfacing[[m]] <- route_graphhopper_so_fix(from = starting_points[[m]], to = ending_points[[m]], vehicle = "hike", silent = FALSE, pat = graphhopper_api_key) %>%
     st_as_sf() %>%
     st_transform(27700)
-    ) stop()
-  return(1)
-}
-
-r <- NULL
-attempt <- 1
-while( is.null(r) && attempt <= 100 ) {
-  attempt <- attempt + 1
-  try(
-    r <- route_may_fail()
-  )
 }
 
 #start and endpoint list of resurfacing routes
-roads_with_resurfacing[[k]] <- resurf_osmr
 
+#intersection_points <- do.call(rbind, intersection_points)
 
+roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
 
-intersection_points <- do.call(rbind, intersection_points)
-
-
-#resurf_graphhopper <- stplanr::route_graphhopper(from = start_node, to = end_node, vehicle = "car", silent = FALSE, pat = graphhopper_api_key) %>%
-#  st_as_sf() %>%
-#  st_transform(27700)
-
+bbox_roads_sf <- do.call(rbind, bbox_roads)
 
 ##########
-st_write(resurf_osmr, "M:/route_testing/line.shp")
-st_write(start_node_bng, "M:/route_testing/start.shp")
-st_write(end_node_bng, "M:/route_testing/end.shp")
+st_write(roads_with_resurfacing_sf, "M:/route_testing/line8.shp")
+st_write(bbox_roads_sf, "M:/route_testing/near_roads1.shp")
+st_write(starting_points_bng_sf, "M:/route_testing/start7.shp")
+st_write(london_roads_westminster, "M:/route_testing/westminster_roads.shp")
+st_write(ending_points_bng_sf, "M:/route_testing/end7.shp")
 
+
+##############using a local routes network of OS highways ############
+
+network <- london_roads %>%
+  st_transform(4326) %>%
+  SpatialLinesNetwork(uselonglat = FALSE, tolerance = 0.001)
+
+class(london_roads)
+class(london_roads_westminster)
+
+test_local <- route_local(sln = network, from = starting_points[[1]], to = ending_points[[1]])
 
   
 #OSM_geocode <- geo_code("No 1 Garway Road, Westminster, London, UK", service = "nominatim")
