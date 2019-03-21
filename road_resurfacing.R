@@ -5,7 +5,7 @@
 #Intended use for the Infrastructure Mapping Applicaiton
 #Council's road resurfacing data in tabular form to spatial table 
 
-#https://cran.r-project.org/web/packages/dodgr/dodgr.pdf
+
 #https://rdrr.io/cran/stplanr/man/route_graphhopper.html
 
 library(dplyr)
@@ -287,14 +287,38 @@ ending_points_bng_sf <- do.call(rbind, ending_points_bng)
 #or create a bounding box, clip the lines, select by street name, then get midpoint of that segment
 
 bbox_roads <- list()
+primary_road_path <- list()
+primary_road_path_nested <- list()
 
 for (z in 1:44) {
   a = st_sf(a = 1:2, geom = st_sfc(st_point(st_coordinates(starting_points_bng_sf[z,1])), st_point(st_coordinates(ending_points_bng_sf[z,1]))), crs = 27700)
   bbox <- st_bbox(a)
   bbox_roads[[z]] <- st_intersection(london_roads_westminster, st_as_sfc(bbox))
+  
+  primary_road <- westminster_council_table_intersections[z,] %>%
+    select(roadname)
+  
+  primary_road_path[[z]] <- bbox_roads[[z]][bbox_roads[[z]]$roadname1 %agrep% primary_road,] %>%
+    st_centroid() %>%
+    st_transform(4326) %>%
+    st_coordinates() %>%
+    as.data.frame() #%>% 
+    #mutate(point = paste(X, Y)) %>%
+    #select(point)
+  obj <- list()
+  obj[[1]] <- starting_points[[z]]
+  
+  for (n in 1:nrow(primary_road_path[[z]])) {
+    obj[[n+1]] <- c(primary_road_path[[z]][1][n,], primary_road_path[[z]][2][n,])
+  }
+  #number of path points plus two (to account for the start point)
+  obj[[nrow(primary_road_path[[z]])+2]] <- ending_points[[z]]
+  
+  primary_road_path_nested[[z]] <- obj
+  
 }
 
-
+bbox_roads_sf <- do.call(rbind, bbox_roads)
 
 ########
 #test the number of items in each list match
@@ -303,12 +327,14 @@ ifelse(length(ending_points) == length(starting_points), print("same amount of s
 
 roads_with_resurfacing <- list()
 
-
 for(m in 1:length(starting_points)) {
 #for(m in 1:8) {
   print(starting_points[[m]])
   print(ending_points[[m]])
-  roads_with_resurfacing[[m]] <- route_graphhopper_so_fix(from = starting_points[[m]], to = ending_points[[m]], vehicle = "hike", silent = FALSE, pat = graphhopper_api_key) %>%
+  #route_graphhopper_so_fix(from = starting_points[[1]], to = ending_points[[1]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
+  
+  ##for loop over this to build a line set then union e.g. primary_road_path_nested[[2]][[1]] is start primary_road_path_nested[[2]][[5]] is end
+  roads_with_resurfacing[[m]] <- route_graphhopper_so_fix(from = starting_points[[m]], to = ending_points[[m]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
     st_as_sf() %>%
     st_transform(27700)
 }
@@ -319,14 +345,13 @@ for(m in 1:length(starting_points)) {
 
 roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
 
-bbox_roads_sf <- do.call(rbind, bbox_roads)
-
 ##########
-st_write(roads_with_resurfacing_sf, "M:/route_testing/line8.shp")
-st_write(bbox_roads_sf, "M:/route_testing/near_roads1.shp")
-st_write(starting_points_bng_sf, "M:/route_testing/start7.shp")
-st_write(london_roads_westminster, "M:/route_testing/westminster_roads.shp")
-st_write(ending_points_bng_sf, "M:/route_testing/end7.shp")
+st_write(roads_with_resurfacing_sf, "M:/route_testing/line9.shp")
+st_write(primary_road_path, "M:/route_testing/path3.shp")
+st_write(bbox_roads_sf, "M:/route_testing/near_roads2.shp")
+st_write(starting_points_bng_sf, "M:/route_testing/start8.shp")
+st_write(london_roads_westminster, "M:/route_testing/westminster_roads2.shp")
+st_write(ending_points_bng_sf, "M:/route_testing/end8.shp")
 
 
 ##############using a local routes network of OS highways ############
