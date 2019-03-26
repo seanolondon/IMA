@@ -302,9 +302,17 @@ for (z in 1:44) {
     st_centroid() %>%
     st_transform(4326) %>%
     st_coordinates() %>%
-    as.data.frame() #%>% 
-    #mutate(point = paste(X, Y)) %>%
-    #select(point)
+    as.data.frame()
+  
+  
+  primary_road_path[[z]] <- primary_road_path[[z]] %>% 
+    geosphere::distm(starting_points[[z]], fun = distHaversine) %>% 
+    as.data.frame() %>% 
+    cbind(primary_road_path[[z]]) %>%
+    mutate(distance = V1) %>%
+    select(X, Y, distance) %>%
+    arrange(distance)
+  
   obj <- list()
   obj[[1]] <- starting_points[[z]]
   
@@ -327,6 +335,43 @@ ifelse(length(ending_points) == length(starting_points), print("same amount of s
 
 roads_with_resurfacing <- list()
 
+#build up paths of primary_road_path_nested [[i]][[j]]]
+
+primary_road_path_nested_routed <- list()
+primary_road_path_nested_routed[[1]] <- list()
+
+
+#for(s in 1:length(primary_road_path_nested)){
+for(s in 1:9){
+  
+  primary_road_path_nested_routed[[s]] <- list()
+  
+  lengthobj <- (length(primary_road_path_nested[[s]])-1)
+  
+  s_obj <- s
+  
+  for(x in 2:length(primary_road_path_nested[[s_obj]])){
+
+    start <- x - 1
+    end <- x #+ 1
+    
+    #order by distance from start point primary_road_path_nested[[s_obj]][[start]]
+    
+    
+    roads_with_resurfacing[[x]] <- route_graphhopper_so_fix(from = primary_road_path_nested[[s_obj]][[start]], to = primary_road_path_nested[[s_obj]][[end]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
+      st_as_sf() %>%
+      st_transform(27700)
+    
+    roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
+    
+  }
+  
+  primary_road_path_nested_routed[[s]] <- roads_with_resurfacing_sf 
+}
+
+
+
+########this section works but you need to build up paths ###########
 for(m in 1:length(starting_points)) {
 #for(m in 1:8) {
   print(starting_points[[m]])
@@ -346,8 +391,9 @@ for(m in 1:length(starting_points)) {
 roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
 
 ##########
-st_write(roads_with_resurfacing_sf, "M:/route_testing/line9.shp")
-st_write(primary_road_path, "M:/route_testing/path3.shp")
+st_write(roads_with_resurfacing_sf, "M:/route_testing/line10.shp")
+st_write(primary_road_path_nested_routed[[8]], "M:/route_testing/path4.shp")
+
 st_write(bbox_roads_sf, "M:/route_testing/near_roads2.shp")
 st_write(starting_points_bng_sf, "M:/route_testing/start8.shp")
 st_write(london_roads_westminster, "M:/route_testing/westminster_roads2.shp")
