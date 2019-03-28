@@ -290,7 +290,8 @@ bbox_roads <- list()
 primary_road_path <- list()
 primary_road_path_nested <- list()
 
-for (z in 1:44) {
+for (z in 1:nrow(starting_points_bng_sf)) {
+  #for (z in 27:27) {
   a = st_sf(a = 1:2, geom = st_sfc(st_point(st_coordinates(starting_points_bng_sf[z,1])), st_point(st_coordinates(ending_points_bng_sf[z,1]))), crs = 27700)
   bbox <- st_bbox(a)
   bbox_roads[[z]] <- st_intersection(london_roads_westminster, st_as_sfc(bbox))
@@ -298,7 +299,7 @@ for (z in 1:44) {
   primary_road <- westminster_council_table_intersections[z,] %>%
     select(roadname)
   
-  primary_road_path[[z]] <- bbox_roads[[z]][bbox_roads[[z]]$roadname1 %agrep% primary_road,] %>%
+  primary_road_path[[z]] <- bbox_roads[[z]][bbox_roads[[z]]$roadname1 %agrep% primary_road,] %>% #st_write("M:/route_testing/Loudoun.shp")
     st_centroid() %>%
     st_transform(4326) %>%
     st_coordinates() %>%
@@ -342,13 +343,15 @@ primary_road_path_nested_routed[[1]] <- list()
 
 
 #for(s in 1:length(primary_road_path_nested)){
-for(s in 1:9){
+for(s in 37:37){
   
   primary_road_path_nested_routed[[s]] <- list()
   
   lengthobj <- (length(primary_road_path_nested[[s]])-1)
   
   s_obj <- s
+  
+  length_s_no_start <- length(primary_road_path_nested[[s_obj]]) - 1
   
   for(x in 2:length(primary_road_path_nested[[s_obj]])){
 
@@ -358,49 +361,30 @@ for(s in 1:9){
     #order by distance from start point primary_road_path_nested[[s_obj]][[start]]
     
     
-    roads_with_resurfacing[[x]] <- route_graphhopper_so_fix(from = primary_road_path_nested[[s_obj]][[start]], to = primary_road_path_nested[[s_obj]][[end]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
+    roads_with_resurfacing[[start]] <- route_graphhopper_so_fix(from = primary_road_path_nested[[s_obj]][[start]], to = primary_road_path_nested[[s_obj]][[end]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
       st_as_sf() %>%
+      select(dist) %>%
       st_transform(27700)
-    
-    roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
-    
   }
+  roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
   
-  primary_road_path_nested_routed[[s]] <- roads_with_resurfacing_sf 
+  roads_with_resurfacing_sf <- st_union(roads_with_resurfacing_sf)
+  
+  primary_road_path_nested_routed[[s]] <- westminster_council_table_intersections[s,] %>%
+    select(roadname) %>%
+    cbind(roads_with_resurfacing_sf)
+  
+  rm(roads_with_resurfacing)
+  roads_with_resurfacing <- list()
+  rm(roads_with_resurfacing_sf)
+  
 }
 
+roads_with_resurfacing_sf_writing <- do.call(rbind, primary_road_path_nested_routed)
 
-
-########this section works but you need to build up paths ###########
-for(m in 1:length(starting_points)) {
-#for(m in 1:8) {
-  print(starting_points[[m]])
-  print(ending_points[[m]])
-  #route_graphhopper_so_fix(from = starting_points[[1]], to = ending_points[[1]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
-  
-  ##for loop over this to build a line set then union e.g. primary_road_path_nested[[2]][[1]] is start primary_road_path_nested[[2]][[5]] is end
-  roads_with_resurfacing[[m]] <- route_graphhopper_so_fix(from = starting_points[[m]], to = ending_points[[m]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
-    st_as_sf() %>%
-    st_transform(27700)
-}
-
-#start and endpoint list of resurfacing routes
-
-#intersection_points <- do.call(rbind, intersection_points)
-
-roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing)
-
-##########
-st_write(roads_with_resurfacing_sf, "M:/route_testing/line10.shp")
-st_write(primary_road_path_nested_routed[[8]], "M:/route_testing/path4.shp")
-
-st_write(bbox_roads_sf, "M:/route_testing/near_roads2.shp")
-st_write(starting_points_bng_sf, "M:/route_testing/start8.shp")
-st_write(london_roads_westminster, "M:/route_testing/westminster_roads2.shp")
-st_write(ending_points_bng_sf, "M:/route_testing/end8.shp")
-
-
-##############using a local routes network of OS highways ############
+###write to check results
+st_write(roads_with_resurfacing_sf_writing, "M:/route_testing/path_working_corretly.shp")
+##########################
 
 network <- london_roads %>%
   st_transform(4326) %>%
