@@ -1,0 +1,499 @@
+#Road Resurfacing
+#01/02/2019
+
+#created by Sean O'Donnell
+#Intended use for the Infrastructure Mapping Applicaiton
+#Council's road resurfacing data in tabular form to spatial table 
+
+
+#https://rdrr.io/cran/stplanr/man/route_graphhopper.html
+
+library(dplyr)
+library(magrittr)
+library(tidyr)
+library(sp)
+library(readxl)
+library(rmarkdown)
+library(purrr)
+library(ggplot2)
+library(ggmap)
+library(leaflet)
+library(sf, lib = .libPaths()[1])
+library(lwgeom)
+library(stplanr)
+library(osmar)
+library(stringdist)
+library(RCurl)
+library(RJSONIO)
+library(revgeo)
+library(httr)
+library(rvest)
+library(rjson)
+library(jsonlite)
+
+#Get the file
+setwd("R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/scripts/road_resurfacing")
+
+#location of the roads from the boroughs
+#read in sheet 2020-21 Carriageways
+source("southwark_roads.R")
+
+#read in the routing function and keys
+source("api_keys.R")
+source("route_graphhopper_so_fix.R")
+
+st_erase = function(x, y) st_difference(x, st_union(st_combine(y)))
+
+#council table details if known
+boroughs_name <- "Southwark"
+gss_code <- "E09000028" 
+date_range <- "2019 - 2020"
+
+#READ IN COUNCIL TABLE
+#Southwark starts on row 15
+#remove columns with all na
+not_all_na <- function(x) any(!is.na(x))
+
+council_table <- read_xlsx(southwark_road_drive_location, sheet = "2019-20 Carriageways", na = c("TBC", "n/a", "#VALUE!", ""), skip = 14) %>%
+  select_if(not_all_na)
+
+#set the GSScode to southwark
+council_table$GSS_CODE<- gss_code
+council_table$borough<- boroughs_name
+council_table$date_range<- date_range
+
+#read in boroughs as BNG
+boroughs <- st_read("W:/GISDataMapInfo/BaseMapping/Boundaries/AdminBoundaries/2018/ESRI/London/London_Borough.shp") %>%
+  st_transform(27700)
+
+#separate out the arrribute table
+borough_table <- st_set_geometry(boroughs, NULL)
+
+
+#read in the base road network from OS highways
+london_roads_folder <- "R:/K/Projects/Development/Planning/London_Infrastructure_Plan_2050/scripts/road_resurfacing/os_highways_2019.gpkg"
+
+london_roads <- st_read(dsn = london_roads_folder, layer = "Network_RoadLink_N", crs = 27700)
+
+#get borough spatial area
+borough_of_interest <- boroughs %>%
+  filter(NAME == boroughs_name)
+
+#filter to westminster roads#
+#THERE ARE DUPLICATE ROAD NAMES, WHICH ARE IN FACT DIFFERENT ROADS. THEY HAVE DIFFERENT AND DISCTINCT SPATIAL LOCATIONS#
+london_roads_by_borough <- london_roads %>%
+  st_intersection(borough_of_interest)%>%
+  rename_all(tolower) %>%
+  mutate(road_name_lwr = tolower(roadname1)) %>%
+  mutate(road_name_clean = stringr::str_replace_all(string=road_name_lwr, pattern=" ", repl="")) %>%
+  mutate(road_name_clean = stringr::str_trim(road_name_clean)) %>%
+  mutate(road_name_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", road_name_clean))
+
+#reformat the council provided road resurfacing table
+colnames(council_table) <- gsub(pattern = "[^a-zA-Z0-9]", replacement = "", colnames(council_table))
+
+#clean the road name column
+##dynamically select 'road name' in future development
+#remove rows missing a roadname
+council_table <- council_table %>%
+  rename_all(tolower) %>%
+  mutate(road_name_lwr = tolower(roadname)) %>%
+  mutate(road_name_clean = stringr::str_replace_all(string=road_name_lwr, pattern=" ", repl="")) %>%
+  mutate(road_name_clean = stringr::str_trim(road_name_clean)) %>%
+  mutate(road_name_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", road_name_clean)) %>%
+  filter(!is.na(roadname))
+
+##DETECTS THE BOUNDARY ROAD BY SUMMING THE MOST 'TO' 
+replacement_to_locationextents <- council_table %>%
+  select(everything()) %>% # replace to your needs
+  summarise_all(funs(sum(grepl(pattern = "TO|to|To", .)))) %>%
+  tidyr::gather() %>%
+  filter(value == max(value)) %>%
+  select(key) %>%
+  as.character()
+
+council_table <- rename(council_table, locationextents = noquote(replacement_to_locationextents))
+  
+#flag if a square
+council_table_intersections <- council_table$roadname %>%
+  stringr::str_detect("Square|square") %>%
+  cbind(council_table) %>%
+  mutate(square_1 = as.numeric(.)) %>%
+  select(-.)  
+
+#flag if a junction/roundabout
+council_table_intersections <- council_table_intersections$locationextents %>%
+  stringr::str_detect("Junction|junction|Roundabout|roundabout") %>%
+  cbind(council_table_intersections) %>%
+  mutate(junction_1 = as.numeric(.)) %>%
+  select(-.) 
+
+#flag if to the end
+council_table_intersections <- council_table_intersections$locationextents %>%
+  stringr::str_detect("to End|to end") %>%
+  cbind(council_table_intersections) %>%
+  mutate(end_1 = as.numeric(.)) %>%
+  select(-.)
+
+council_table_intersections <- council_table_intersections$locationextents %>%
+  stringr::str_split_fixed(pattern = " to |& |TO |To ", n = Inf) %>%
+  cbind(council_table_intersections) %>%
+  rename(intersection_1 = `1`) %>%
+  rename(intersection_2 = `2`) %>%
+  rename(intersection_3 = `3`) %>%
+  mutate(intersection_1_lwr = tolower(intersection_1)) %>%
+  mutate(intersection_1_clean = stringr::str_replace_all(string=intersection_1_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_1_clean = stringr::str_trim(intersection_1_clean)) %>%
+  mutate(intersection_1_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_1_clean)) %>%
+  mutate(intersection_2_lwr = tolower(intersection_2)) %>%
+  mutate(intersection_2_clean = stringr::str_replace_all(string=intersection_2_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_2_clean = stringr::str_trim(intersection_2_clean)) %>%
+  mutate(intersection_2_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_2_clean)) %>%
+  mutate(intersection_2_clean = gsub(pattern = "^end$", replacement = "", intersection_2_clean)) %>%
+  mutate(intersection_3_lwr = tolower(intersection_3)) %>%
+  mutate(intersection_3_clean = stringr::str_replace_all(string=intersection_3_lwr, pattern=" ", repl="")) %>%
+  mutate(intersection_3_clean = stringr::str_trim(intersection_3_clean)) %>%
+  mutate(intersection_3_clean = gsub(pattern = "[^a-zA-Z0-9]", replacement = "", intersection_3_clean)) %>%
+  mutate(startname1 = paste0(road_name_clean, intersection_1_clean)) %>%
+  mutate(startname2 = paste0(road_name_clean, intersection_2_clean)) %>%
+  mutate(startname3 = paste0(road_name_clean, intersection_3_clean)) %>%
+  mutate(startname1_alt = paste0(intersection_1_clean, road_name_clean)) %>%
+  mutate(startname2_alt = paste0(intersection_2_clean, road_name_clean)) %>%
+  mutate(startname3_alt = paste0(intersection_3_clean, road_name_clean)) %>%
+  mutate(endname1 = paste0(road_name_clean, intersection_1_clean)) %>%
+  mutate(endname2 = paste0(road_name_clean, intersection_2_clean)) %>%
+  mutate(endname3 = paste0(road_name_clean, intersection_3_clean)) %>%
+  mutate(endname1_alt = paste0(intersection_1_clean, road_name_clean)) %>%
+  mutate(endname2_alt = paste0(intersection_2_clean, road_name_clean)) %>%
+  mutate(endname3_alt = paste0(intersection_3_clean, road_name_clean))
+
+##################check for node removal error ########### 
+
+london_roads_by_borough <- london_roads_by_borough %>%
+  select(roadname1)
+
+OSMCRS <- sp::CRS("+init=epsg:4326")
+
+########################################################################
+
+#filter out squares and ends and blank intersection 2 
+#roadname plus intersection_1 = start_node
+#roadname plus intersection_2 = end node_node
+#intersection of road & intersec1 + road & intersect2 + borough + london + uk
+
+council_table_intersections$start_string <- paste("Intersection of", 
+                                                              council_table_intersections$roadname, 
+                                                              "and", 
+                                                              council_table_intersections$intersection_1,
+                                                              ",",
+                                                              boroughs_name,
+                                                              ", London, UK")
+
+council_table_intersections$end_string <- paste("Intersection of", 
+                                                            council_table_intersections$roadname, 
+                                                            "and", 
+                                                            council_table_intersections$intersection_2,
+                                                            ",",
+                                                            boroughs_name,
+                                                            ", London, UK")
+
+council_table_intersections <- council_table_intersections %>%
+  filter(square_1 < 1) %>%
+  filter(junction_1 < 1) %>%
+  filter(end_1 < 1)
+
+starting_points <- list()
+ending_points <- list()
+
+starting_points_bng <- list()
+ending_points_bng <- list()
+
+#Function to build spatial lists of start points, end points, and road resurfacing
+#often errors due to no response and overload from rousting server
+#there is a function to catch this. 
+
+for(k in 1:nrow(council_table_intersections)) {
+  
+  start_node <- geo_code(council_table_intersections$start_string[k], return_all = TRUE, service = "google", pat = google_api_key) %>% 
+    as.data.frame()
+  
+  if (start_node$types == "intersection"){
+    start_node <- filter(start_node, types == "intersection")
+  } else {
+    print("false")
+  }
+  
+  start_node <- start_node %>%
+    select(matches('geometry.location.lat|geometry.location.lng'))%>%
+    filter(row_number() == 1)
+  
+  #tibble::rownames_to_column(var = "latlong") %>%
+  #filter(latlong == "lon1"| latlong == "lat1" | latlong == "lon"| latlong == "lat")
+  
+  start_node <- c(start_node[1,2], start_node[1,1])
+  
+  starting_points[[k]] <- start_node
+  
+  start_node_bng <- sp::SpatialPoints(matrix(start_node, ncol = 2), proj4string = OSMCRS) %>% 
+    st_as_sf() %>%
+    st_transform(27700)
+  
+  starting_points_bng[[k]] <- start_node_bng
+}
+
+
+for(l in 1:nrow(council_table_intersections)) {
+  
+  end_node <- geo_code(council_table_intersections$end_string[l], return_all = TRUE, service = "google", pat = google_api_key) %>% 
+    as.data.frame()
+  
+  if (end_node$types == "intersection"){
+    end_node <- filter(end_node, types == "intersection")
+  } else {
+    print("false")
+  }
+  
+  end_node <- end_node %>%
+    select(matches('geometry.location.lat|geometry.location.lng'))%>%
+    filter(row_number() == 1)
+  
+  #tibble::rownames_to_column(var = "latlong") %>%
+  #filter(latlong == "lon1"| latlong == "lat1" | latlong == "lon"| latlong == "lat")
+  
+  end_node <- c(end_node[1,2], end_node[1,1])
+  
+  ending_points[[l]] <- end_node
+  
+  end_node_bng <- sp::SpatialPoints(matrix(end_node, ncol = 2), proj4string = OSMCRS) %>% 
+    st_as_sf() %>%
+    st_transform(27700)
+  
+  ending_points_bng[[l]] <- end_node_bng
+  
+}
+
+starting_points_bng_sf <- do.call(rbind, starting_points_bng)
+ending_points_bng_sf <- do.call(rbind, ending_points_bng)
+
+####need midpoints so most effecient route isn't taken
+#use startpoint and endpoint to create a bounding box
+#use the bounding box to filter nodes
+#find a node which intersects the road twice 
+#or create a bounding box, clip the lines, select by street name, then get midpoint of that segment
+
+bbox_roads <- list()
+primary_road_path <- list()
+primary_road_path_nested <- list()
+
+#for (z in 1:nrow(starting_points_bng_sf)) {
+  #for (z in 27:27) {
+  z <- 1
+  
+  a <- st_sf(a = 1:2, geom = st_sfc(st_point(st_coordinates(starting_points_bng_sf[z,1])), st_point(st_coordinates(ending_points_bng_sf[z,1]))), crs = 27700)
+  
+  bbox <- st_bbox(a)
+  
+  bbox_roads[[z]] <- st_intersection(london_roads_by_borough, st_as_sfc(bbox))
+  
+  primary_road <- council_table_intersections[z,] %>%
+    select(roadname)
+  
+  ####filter here sections of road which had the correct name and touch roads with the correct name more than once. 
+  
+  path_building <- bbox_roads[[z]][bbox_roads[[z]]$roadname1 %agrep% primary_road,]
+  
+  primary_road_mid_path <- path_building %>%
+    filter(rowSums(st_touches(path_building, path_building, sparse = FALSE)) > 2) 
+  
+  if (nrow(primary_road_mid_path) > 0){
+    print("has enough rows, keep primary_road_mid_path")
+  }else {
+    primary_road_mid_path <- path_building
+  }
+  
+  primary_road_path[[z]] <- primary_road_mid_path %>% #st_write("M:/route_testing/Loudoun.shp")
+    st_centroid() %>%
+    st_transform(4326) %>%
+    st_coordinates() %>%
+    as.data.frame()
+  
+  #order by distance from the start point
+  primary_road_path[[z]] <- primary_road_path[[z]] %>% 
+    geosphere::distm(starting_points[[z]], fun = distHaversine) %>% 
+    as.data.frame() %>% 
+    cbind(primary_road_path[[z]]) %>%
+    mutate(distance = V1) %>%
+    select(X, Y, distance) %>%
+    arrange(distance)
+  
+  obj <- list()
+  obj[[1]] <- starting_points[[z]]
+  
+  for (n in 1:nrow(primary_road_path[[z]])) {
+    obj[[n+1]] <- c(primary_road_path[[z]][1][n,], primary_road_path[[z]][2][n,])
+  }
+  #number of path points plus two (to account for the start point)
+  obj[[nrow(primary_road_path[[z]])+2]] <- ending_points[[z]]
+  
+  primary_road_path_nested[[z]] <- obj
+  
+}
+
+bbox_roads_sf <- do.call(rbind, bbox_roads)
+
+########
+#test the number of items in each list match
+ifelse(length(ending_points) == length(starting_points), print("same amount of start & end"), stop("mismatch in geocoding"))
+########
+
+roads_with_resurfacing <- list()
+
+#build up paths of primary_road_path_nested [[i]][[j]]]
+primary_road_path_nested_routed <- list()
+primary_road_path_nested_routed[[1]] <- list()
+
+
+for(s in 1:length(primary_road_path_nested)){
+  #for(s in 37:37){
+  
+  primary_road_path_nested_routed[[s]] <- list()
+  
+  lengthobj <- (length(primary_road_path_nested[[s]])-1)
+  
+  s_obj <- s
+  
+  length_s_no_start <- length(primary_road_path_nested[[s_obj]]) - 1
+  
+  for(x in 2:length(primary_road_path_nested[[s_obj]])){
+    
+    start <- x - 1
+    end <- x #+ 1
+    
+    #order by distance from start point primary_road_path_nested[[s_obj]][[start]]
+    roads_with_resurfacing[[start]] <- route_graphhopper_so_fix(from = primary_road_path_nested[[s_obj]][[start]], to = primary_road_path_nested[[s_obj]][[end]], vehicle = "foot", silent = FALSE, pat = graphhopper_api_key) %>%
+      st_as_sf() %>%
+      select(dist) %>%
+      st_transform(27700)
+  }
+  roads_with_resurfacing_sf <- do.call(rbind, roads_with_resurfacing) 
+  
+  roads_with_resurfacing_sf2 <- st_union(roads_with_resurfacing_sf)
+  
+  primary_road_path_nested_routed[[s]] <- council_table_intersections[s,] %>%
+    select(roadname) %>%
+    cbind(roads_with_resurfacing_sf2)
+  
+}
+
+#roads_with_resurfacing_sf_writing <- do.call(rbind, primary_road_path_nested_routed)
+
+#roads_with_resurfacing_sf_writing <- st_as_sf(roads_with_resurfacing_sf_writing)
+
+###write to check results
+st_write(roads_with_resurfacing_sf_writing, "M:/route_testing/path_cleaner_southwark.shp")
+##########################
+
+
+##############
+
+network <- london_roads %>%
+  st_transform(4326) %>%
+  SpatialLinesNetwork(uselonglat = FALSE, tolerance = 0.001)
+
+class(london_roads)
+class(london_roads_by_borough)
+
+test_local <- route_local(sln = network, from = starting_points[[1]], to = ending_points[[1]])
+
+
+#OSM_geocode <- geo_code("No 1 Garway Road, Westminster, London, UK", service = "nominatim")
+
+#sp::SpatialPoints(matrix(point1, ncol = 2), proj4string = OSMCRS) %>% 
+# st_as_sf()
+#set up intersection 2
+
+#get ALL roads with a match - could be duplicated if roads with same name#
+roads_with_resurfacing <- full_join(london_roads_by_borough, council_table_intersections, by = "road_name_clean") %>%
+  filter(!is.na(roadname))
+
+########################################################
+
+#CLIP BY BOROUGH#
+london_roads_by_borough <- sapply(st_intersects(london_roads_by_borough, boroughs),function(x){length(x)!=0}) %>%
+  subset(london_roads_by_borough, subset = .) %>%
+  st_intersection(boroughs)
+
+
+
+#CLIP BY TOUCHING ROADS OF BOROUGH ROADS#
+#evolve into a for loop, replace 4 with i#
+
+#roads_with_resurfacing[4,]
+#filter out squares and junctions! 
+roads_with_resurfacing_simple <- roads_with_resurfacing %>%
+  filter(square_1 < 1) %>%
+  filter(junction_1 < 1) %>%
+  filter(end_1 < 1)
+
+roads_with_resurfacing_clipped <- list()
+
+for(i in 1:nrow(roads_with_resurfacing_simple)) {
+  
+  resurfacing_road_unclipped <- roads_with_resurfacing_simple[1,] %>%
+    st_cast("MULTILINESTRING") 
+  
+  resurfacing_road_unclipped_df <- st_set_geometry(resurfacing_road_unclipped, NULL)
+  
+  print(resurfacing_road_unclipped_df$road_name_clean[1])
+  
+}
+
+#plotting only#
+#put into wgs for plotting
+intersecting_roads <- clipping_resurfaced_roads %>%
+  st_transform(4326)  
+
+roads_by_borough_plot <- roads_with_resurfacing %>%
+  st_transform(4326)
+
+base_roads_by_borough_plot <- london_roads_by_borough %>%
+  st_transform(4326)
+
+boroughs_plot <- boroughs %>%
+  st_transform(4326)
+
+#road_with_resurfaceing_plot <- resurfacing_road_unclipped %>%
+#  st_transform(4326)
+
+#split_resurfaced_road_plot <- roads_with_resurfacing_clipped %>%
+#  st_transform(4326)
+
+leaflet() %>%
+  addMapPane(name = 'base', zIndex = 1) %>%
+  addMapPane(name = 'themes', zIndex = 2) %>%
+  clearBounds() %>%
+  #51.5199312,-0.2023115
+  setView(lng = -0.2023115, lat = 51.5199312, zoom = 18) %>% #create a default position
+  addProviderTiles("Stamen.TonerLite",
+                   options = leafletOptions(pane = 'base')) %>%
+  addPolygons(data = boroughs_plot,
+              color = "blue",
+              opacity = 0.2,
+              options = leafletOptions(pane='themes')) %>%
+  addPolylines(data = base_roads_by_borough_plot,
+               color = "green",
+               weight = 3,
+               opacity = 0.2,
+               options = leafletOptions(pane='themes')) %>%
+  addPolylines(data = roads_by_borough_plot,
+               color = "red",
+               weight = 3,
+               options = leafletOptions(pane='themes')) #%>%
+#addPolylines(data = intersecting_roads,
+#            color = "yellow",
+#           weight = 4,
+#         options = leafletOptions(pane='themes')) %>%
+#addPolylines(data = split_resurfaced_road_plot,
+#         color = "orange",
+#        weight = 5,
+#       options = leafletOptions(pane='themes'))
